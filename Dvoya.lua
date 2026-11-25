@@ -1,6 +1,6 @@
--- DmxConsoleUI_Fixed.lua (360x465)
--- Tab patch: awalnya kosong, muncul kotak channel sesuai add fixture + (multi-select), TANPA Pan/Tilt
--- Tab Preferensi: ada Pan / Tilt + number° + fader geser -> buffer.create(3) ke carModel.Data
+-- DmxConsoleUI_Synced.lua (360x465)
+-- Kotak channel di patch dan Preferensi sinkron 1:1 (kalau di patch muncul 1 kotak, di Preferensi juga 1 kotak)
+-- Multi-select channel + Pan / Tilt + number° + fader geser -> buffer.create(3) ke carModel.Data
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -219,13 +219,13 @@ end
 local transport = DmxTransport.new(player)
 
 -- ============================================================================
--- UI (360x465) — PATCH KOSONG AWAL & SESUAI ADD FIXTURE; PAN/TILT DI PREFERENSI
+-- UI (360x465) — KOTAK CHANNEL SINKRON 1:1 ANTARA PATCH & PREFERENSI
 -- ============================================================================
 local parentTarget = player:WaitForChild("PlayerGui")
 pcall(function()
 	if gethui then parentTarget = gethui() end
 end)
-local oldGui = parentTarget:FindFirstChild("DmxConsoleFixedGui")
+local oldGui = parentTarget:FindFirstChild("DmxConsoleSyncedGui")
 if oldGui then oldGui:Destroy() end
 
 local fixtureNames = {}
@@ -250,9 +250,9 @@ local state = {
 	slotsPerPage = 12,
 	universe = 1,
 	fixtureIndex = 1,
-	addedCountByUniv = { [1] = 0, [2] = 0 }, -- awal 0 -> kotak channel kosong sampai di-add
-	selectedChannels = {}, -- multi-select channel (bisa pilih lebih dari 1)
-	axisMode = "Pan", -- "Pan" (X) atau "Tilt" (Y) di tab Preferensi
+	addedCountByUniv = { [1] = 0, [2] = 0 }, -- jumlah kotak channel yang muncul di patch & Preferensi
+	selectedChannels = {}, -- multi-select channel
+	axisMode = "Pan", -- "Pan" (X) atau "Tilt" (Y)
 	rawByUniv = { [1] = {}, [2] = {} },
 	patchedByUniv = { [1] = {}, [2] = {} },
 	nextAddress = 1,
@@ -307,7 +307,7 @@ local function applyAxisToSelectedChannels(dmxVal)
 end
 
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "DmxConsoleFixedGui"
+screenGui.Name = "DmxConsoleSyncedGui"
 screenGui.ResetOnSpawn = false
 screenGui.IgnoreGuiInset = true
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
@@ -417,23 +417,23 @@ bodyFrame.BackgroundTransparency = 1
 bodyFrame.Parent = mainFrame
 
 -- ============================================================================
--- TAB 1: PATCH (Kosong di awal, kotak muncul sesuai add fixture +, multi-select, TANPA Pan/Tilt)
+-- KOMPONEN BERSAMA: GRID CHANNEL & PAGING (1:1 antara patch dan Preferensi)
 -- ============================================================================
-local patchPage = Instance.new("Frame")
-patchPage.Size = UDim2.fromScale(1, 1)
-patchPage.BackgroundTransparency = 1
-patchPage.Visible = true
-patchPage.Parent = bodyFrame
+local sharedChannelHolder = Instance.new("Frame")
+sharedChannelHolder.Size = UDim2.new(1, 0, 0, 124)
+sharedChannelHolder.Position = UDim2.fromOffset(0, 2)
+sharedChannelHolder.BackgroundTransparency = 1
+sharedChannelHolder.Parent = bodyFrame
 
 local channelFrame = Instance.new("ScrollingFrame")
 channelFrame.Name = "ChannelContainer"
 channelFrame.Size = UDim2.new(1, 0, 0, 96)
-channelFrame.Position = UDim2.fromOffset(0, 2)
+channelFrame.Position = UDim2.fromOffset(0, 0)
 channelFrame.BackgroundTransparency = 1
 channelFrame.ScrollBarThickness = 3
 channelFrame.CanvasSize = UDim2.fromOffset(0, 0)
 channelFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-channelFrame.Parent = patchPage
+channelFrame.Parent = sharedChannelHolder
 
 local channelGrid = Instance.new("UIGridLayout")
 channelGrid.CellSize = UDim2.fromOffset(49, 43)
@@ -444,29 +444,39 @@ channelGrid.Parent = channelFrame
 
 local pageLabel = Instance.new("TextLabel")
 pageLabel.Size = UDim2.fromOffset(90, 20)
-pageLabel.Position = UDim2.fromOffset(0, 104)
+pageLabel.Position = UDim2.fromOffset(0, 102)
 pageLabel.BackgroundTransparency = 1
 pageLabel.Text = "page 1"
 pageLabel.TextXAlignment = Enum.TextXAlignment.Left
 pageLabel.TextColor3 = Color3.fromRGB(190, 190, 195)
 pageLabel.TextSize = 13
 pageLabel.Font = Enum.Font.Gotham
-pageLabel.Parent = patchPage
+pageLabel.Parent = sharedChannelHolder
 
 local nextPageBtn = Instance.new("TextButton")
 nextPageBtn.Size = UDim2.fromOffset(96, 20)
-nextPageBtn.Position = UDim2.new(1, -96, 0, 104)
+nextPageBtn.Position = UDim2.new(1, -96, 0, 102)
 nextPageBtn.BackgroundTransparency = 1
 nextPageBtn.Text = "next page >"
 nextPageBtn.TextXAlignment = Enum.TextXAlignment.Right
 nextPageBtn.TextColor3 = Color3.fromRGB(190, 190, 195)
 nextPageBtn.TextSize = 13
 nextPageBtn.Font = Enum.Font.Gotham
-nextPageBtn.Parent = patchPage
+nextPageBtn.Parent = sharedChannelHolder
+
+-- ============================================================================
+-- TAB 1: PATCH
+-- ============================================================================
+local patchPage = Instance.new("Frame")
+patchPage.Size = UDim2.new(1, 0, 1, -126)
+patchPage.Position = UDim2.fromOffset(0, 126)
+patchPage.BackgroundTransparency = 1
+patchPage.Visible = true
+patchPage.Parent = bodyFrame
 
 local addFixtureBtn = Instance.new("TextButton")
 addFixtureBtn.Size = UDim2.fromOffset(104, 28)
-addFixtureBtn.Position = UDim2.new(1, -104, 0, 146)
+addFixtureBtn.Position = UDim2.new(1, -104, 0, 20)
 addFixtureBtn.BackgroundColor3 = Color3.fromRGB(33, 134, 235)
 addFixtureBtn.Text = "add fixture +"
 addFixtureBtn.TextColor3 = Color3.fromRGB(245, 248, 255)
@@ -478,7 +488,7 @@ Instance.new("UICorner", addFixtureBtn).CornerRadius = UDim.new(0, 8)
 
 local fixtureRow = Instance.new("Frame")
 fixtureRow.Size = UDim2.new(1, 0, 0, 32)
-fixtureRow.Position = UDim2.fromOffset(0, 184)
+fixtureRow.Position = UDim2.fromOffset(0, 58)
 fixtureRow.BackgroundColor3 = Color3.fromRGB(74, 74, 77)
 fixtureRow.BorderSizePixel = 0
 fixtureRow.Parent = patchPage
@@ -542,9 +552,9 @@ local function createPill(parent, yPos, isInput, textOrPlaceholder)
 	return box
 end
 
-local countBox = createPill(patchPage, 222, true, "count fixture your add")
-local universeBtn = createPill(patchPage, 258, false, "Universe 1")
-local autoCalcBtn = createPill(patchPage, 294, false, "Auto calculate")
+local countBox = createPill(patchPage, 96, true, "count fixture your add")
+local universeBtn = createPill(patchPage, 132, false, "Universe 1")
+local autoCalcBtn = createPill(patchPage, 168, false, "Auto calculate")
 
 local addrBadge = Instance.new("TextLabel")
 addrBadge.Size = UDim2.fromOffset(92, 24)
@@ -559,10 +569,11 @@ addrBadge.Parent = patchPage
 Instance.new("UICorner", addrBadge).CornerRadius = UDim.new(0, 6)
 
 -- ============================================================================
--- TAB 2: PREFERENSI (Pan / Tilt + number° + Fader Geser)
+-- TAB 2: PREFERENSI (Kotak channel sinkron + Pan / Tilt + number° + Fader)
 -- ============================================================================
 local prefPage = Instance.new("Frame")
-prefPage.Size = UDim2.fromScale(1, 1)
+prefPage.Size = UDim2.new(1, 0, 1, -126)
+prefPage.Position = UDim2.fromOffset(0, 126)
 prefPage.BackgroundTransparency = 1
 prefPage.Visible = false
 prefPage.Parent = bodyFrame
@@ -724,18 +735,19 @@ function refreshUI()
 		end
 	end
 
-	local totalAdded = state.addedCountByUniv[state.universe] or 0
-	if totalAdded > 0 then
-		local startCh = (state.page - 1) * state.slotsPerPage + 1
-		local endCh = math.min(totalAdded, state.page * state.slotsPerPage)
+	-- Sinkron 1:1 jumlah kotak dengan yang muncul di patch
+	local totalBoxes = state.addedCountByUniv[state.universe] or 0
+	if totalBoxes > 0 then
+		local startIdx = (state.page - 1) * state.slotsPerPage + 1
+		local endIdx = math.min(totalBoxes, state.page * state.slotsPerPage)
 
-		for ch = startCh, endCh do
-			local isSelected = state.selectedChannels[ch] == true
+		for idx = startIdx, endIdx do
+			local isSelected = state.selectedChannels[idx] == true
 			local card = Instance.new("TextButton")
-			card.Name = "Ch_" .. ch
-			card.LayoutOrder = ch - startCh + 1
+			card.Name = "Box_" .. idx
+			card.LayoutOrder = idx - startIdx + 1
 			card.BackgroundColor3 = isSelected and Color3.fromRGB(11, 136, 153) or Color3.fromRGB(72, 72, 75)
-			card.Text = tostring(ch)
+			card.Text = tostring(idx)
 			card.TextColor3 = isSelected and Color3.fromRGB(240, 250, 252) or Color3.fromRGB(240, 245, 255)
 			card.TextSize = 14
 			card.Font = Enum.Font.GothamBold
@@ -748,7 +760,7 @@ function refreshUI()
 			stroke.Thickness = 1.5
 
 			card.MouseButton1Click:Connect(function()
-				state.selectedChannels[ch] = not state.selectedChannels[ch]
+				state.selectedChannels[idx] = not state.selectedChannels[idx]
 				refreshUI()
 			end)
 		end
@@ -775,9 +787,10 @@ for _, tName in ipairs(tabNames) do
 		state.activeTab = tName
 		for name, b in pairs(tabButtons) do
 			local active = (name == tName)
-			b.BackgroundColor3 = active and Color3.fromRGB(11, 136, 153) or Color3.fromRGB(115, 115, 119)
+			b.BackgroundColor3 = active and Color3.fromRGB(11, 136, 153) or Color3.fromRGB(115, 116, 119)
 			b.TextColor3 = active and Color3.fromRGB(240, 250, 252) or Color3.fromRGB(32, 32, 34)
 		end
+		sharedChannelHolder.Visible = (tName == "patch" or tName == "Preferensi")
 		patchPage.Visible = (tName == "patch")
 		prefPage.Visible = (tName == "Preferensi")
 		mainPage.Visible = (tName == "main")
@@ -787,7 +800,7 @@ end
 
 for name, b in pairs(tabButtons) do
 	local active = (name == state.activeTab)
-	b.BackgroundColor3 = active and Color3.fromRGB(11, 136, 153) or Color3.fromRGB(115, 115, 119)
+	b.BackgroundColor3 = active and Color3.fromRGB(11, 136, 153) or Color3.fromRGB(115, 116, 119)
 	b.TextColor3 = active and Color3.fromRGB(240, 250, 252) or Color3.fromRGB(32, 32, 34)
 end
 
@@ -822,9 +835,7 @@ autoCalcBtn.MouseButton1Click:Connect(function()
 end)
 
 addFixtureBtn.MouseButton1Click:Connect(function()
-	local qty = math.floor(tonumber(countBox.Text) or 1)
-	if qty < 1 then qty = 1 end
-
+	local qty = math.max(1, math.floor(tonumber(countBox.Text) or 1))
 	local fixName = getSelectedFixtureName()
 	for _ = 1, qty do
 		table.insert(state.rawByUniv[state.universe], {
@@ -849,8 +860,8 @@ addFixtureBtn.MouseButton1Click:Connect(function()
 end)
 
 nextPageBtn.MouseButton1Click:Connect(function()
-	local totalAdded = state.addedCountByUniv[state.universe] or 0
-	local totalPages = math.max(1, math.ceil(totalAdded / state.slotsPerPage))
+	local totalBoxes = state.addedCountByUniv[state.universe] or 0
+	local totalPages = math.max(1, math.ceil(totalBoxes / state.slotsPerPage))
 	state.page = (state.page % totalPages) + 1
 	refreshUI()
 end)

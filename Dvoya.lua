@@ -1,14 +1,16 @@
 -- DmxConsoleUI_Synced.lua (360x465)
 -- Kotak channel di patch dan Preferensi sinkron 1:1 (kalau di patch muncul 1 kotak, di Preferensi juga 1 kotak)
--- Multi-select channel + Pan / Tilt + number° + fader geser + efek 16-ch beam -> buffer.create(3) ke carModel.Data
+-- Multi-select channel + Pan / Tilt + number° + fader geser + efek 16-ch beam -> buffer.create(3) ke UDP_DMXDATA
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local MAX_CHANNELS = 512
 local DEFAULT_MAX_UNIVERSES = 2
+local REMOTE_NAME = "UDP_DMXDATA"
 
 -- ============================================================================
 -- PATCH ENGINE
@@ -176,10 +178,10 @@ if type(PatchEngine.GetFixtureAtChannel) ~= "function" then
 end
 
 -- ============================================================================
--- TRANSPORT BUFFER 3-BYTE -> carModel.Data
+-- TRANSPORT BUFFER 3-BYTE -> UDP_DMXDATA
 -- ============================================================================
 local function getOwnCarModel(plr)
-	local vehicles = workspace:FindFirstChild("Vehicles")
+	local vehicles = Workspace:FindFirstChild("Vehicles")
 	if not vehicles or not plr then return nil end
 	local exact = vehicles:FindFirstChild(plr.Name .. "'s Car")
 	if exact then return exact end
@@ -192,36 +194,58 @@ local function getOwnCarModel(plr)
 	return nil
 end
 
+local function findUdpDmxRemote(plr)
+	local carModel = getOwnCarModel(plr)
+	if carModel then
+		local r = carModel:FindFirstChild(REMOTE_NAME, true)
+		if r and (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent")) then
+			return r
+		end
+	end
+	local rRs = ReplicatedStorage:FindFirstChild(REMOTE_NAME, true)
+	if rRs and (rRs:IsA("RemoteEvent") or rRs:IsA("UnreliableRemoteEvent")) then
+		return rRs
+	end
+	local rWs = Workspace:FindFirstChild(REMOTE_NAME, true)
+	if rWs and (rWs:IsA("RemoteEvent") or rWs:IsA("UnreliableRemoteEvent")) then
+		return rWs
+	end
+	return nil
+end
+
 local DmxTransport = {}
 DmxTransport.__index = DmxTransport
 
 function DmxTransport.new(plr)
 	local self = setmetatable({}, DmxTransport)
 	self.Player = plr
-	self.DataRemote = nil
+	self.DataRemote = findUdpDmxRemote(plr)
 	self.LastValues = {}
 	self:_bind()
 	return self
 end
 
-function DmxTransport:_attach(carModel)
-	if not carModel or carModel ~= getOwnCarModel(self.Player) then return end
-	task.spawn(function()
-		local remote = carModel:WaitForChild("Data", 30)
-		if remote and (remote:IsA("RemoteEvent") or remote:IsA("UnreliableRemoteEvent")) then
-			self.DataRemote = remote
-		end
-	end)
+function DmxTransport:_refreshRemote()
+	local found = findUdpDmxRemote(self.Player)
+	if found then
+		self.DataRemote = found
+	end
+	return self.DataRemote
 end
 
 function DmxTransport:_bind()
-	local vehicles = workspace:FindFirstChild("Vehicles")
-	if not vehicles then return end
-	for _, child in ipairs(vehicles:GetChildren()) do
-		self:_attach(child)
+	local vehicles = Workspace:FindFirstChild("Vehicles")
+	if vehicles then
+		vehicles.ChildAdded:Connect(function()
+			task.wait(0.25)
+			self:_refreshRemote()
+		end)
 	end
-	vehicles.ChildAdded:Connect(function(child)
-		self:_attach(child)
+	task.spawn(function()
+		while not self.DataRemote do
+			self:_refreshRemote()
+			task.wait(1)
+		end
 	end)
 end
 
@@ -232,13 +256,14 @@ function DmxTransport:SendChannel(ch, dmxVal, force)
 		return true
 	end
 	self.LastValues[channel] = val
-	if not self.DataRemote then
+	local remote = self.DataRemote or self:_refreshRemote()
+	if not remote then
 		return false
 	end
 	local buf = buffer.create(3)
 	buffer.writeu16(buf, 0, channel)
 	buffer.writeu8(buf, 2, val)
-	self.DataRemote:FireServer(buf)
+	remote:FireServer(buf)
 	return true
 end
 
@@ -277,7 +302,7 @@ local state = {
 	universe = 1,
 	fixtureIndex = 1,
 	addedCountByUniv = { [1] = 0, [2] = 0 }, -- jumlah kotak channel yang muncul di patch & Preferensi
-	selectedChannels = {}, -- multi-select channel
+	selectedChannels = {}, -- multi-select kotak/fixture
 	axisMode = "Pan", -- "Pan" (X) atau "Tilt" (Y)
 	rawByUniv = { [1] = {}, [2] = {} },
 	patchedByUniv = { [1] = {}, [2] = {} },
@@ -306,33 +331,45 @@ local function getSelectedChannelList()
 	return list
 end
 
-local function sendGateIfNeeded(fix)
-	if state.autoOpenGate and fix and fix.Channels then
-		if fix.Channels.Dimmer then
-			transport:SendChannel(fix.Channels.Dimmer, 255, true)
-		end
-		-- Nilai 0..3 berada di OffRanges strobe (lampu nyala normal tanpa kedip)
-		if fix.Channels.Shutter then
-			transport:SendChannel(fix.Channels.Shutter, 0, true)
-		end
+local function resolveFixtureForBox(boxIdx)
+	local patched = state.patchedByUniv[state.universe] or {}
+	if patched[boxIdx] then
+		return patched[boxIdx]
+	end
+	return PatchEngine.GetFixtureAtChannel(patched, boxIdx, state.universe)
+end
+
+local function openGateForFixture(fix)
+	if not (state.autoOpenGate and fix and fix.Channels) then return end
+	if fix.Channels.Dimmer then
+		transport:SendChannel(fix.Channels.Dimmer, 255, true)
+	end
+	-- Nilai 0..3 berada di OffRanges strobe (lampu nyala normal tanpa kedip)
+	if fix.Channels.Shutter then
+		transport:SendChannel(fix.Channels.Shutter, 0, true)
 	end
 end
 
 local function sendToSelectedRole(roleKey, dmxVal, fallbackCh)
 	local clamped = math.clamp(math.floor(dmxVal), 0, 255)
-	local patched = state.patchedByUniv[state.universe] or {}
 	local targets = {}
 	local seen = {}
 
-	for ch, isSel in pairs(state.selectedChannels) do
+	for boxIdx, isSel in pairs(state.selectedChannels) do
 		if isSel then
-			local fix = PatchEngine.GetFixtureAtChannel(patched, ch, state.universe)
-			local targetCh = (fix and fix.Channels and fix.Channels[roleKey]) or fallbackCh or ch
+			local fix = resolveFixtureForBox(boxIdx)
+			local targetCh = (fix and fix.Channels and fix.Channels[roleKey])
+			if not targetCh then
+				if fix and fix.Address and fallbackCh then
+					targetCh = toAbsChannel(fix.Address, fallbackCh - 1, fix.Span or 16)
+				else
+					targetCh = boxIdx
+				end
+			end
 			if targetCh and not seen[targetCh] then
 				seen[targetCh] = true
 				table.insert(targets, targetCh)
 			end
-			sendGateIfNeeded(fix)
 		end
 	end
 
@@ -598,8 +635,8 @@ local universeBtn = createPill(patchPage, 132, false, "Universe 1")
 local autoCalcBtn = createPill(patchPage, 168, false, "Auto calculate")
 
 local addrBadge = Instance.new("TextLabel")
-addrBadge.Size = UDim2.fromOffset(92, 24)
-addrBadge.Position = UDim2.new(1, -92, 1, -24)
+addrBadge.Size = UDim2.fromOffset(124, 24)
+addrBadge.Position = UDim2.new(1, -124, 1, -24)
 addrBadge.BackgroundColor3 = Color3.fromRGB(168, 168, 172)
 addrBadge.Text = "U1 • 1"
 addrBadge.TextColor3 = Color3.fromRGB(30, 30, 32)
@@ -673,7 +710,8 @@ local function setFaderRatio(ratio)
 	local maxOffset = math.max(1, faderTrack.AbsoluteSize.X - faderThumb.AbsoluteSize.X)
 	faderThumb.Position = UDim2.fromOffset(math.floor(r * maxOffset), -7)
 
-	local degVal = math.floor(r * 360 + 0.5)
+	local maxSpanDeg = (state.axisMode == "Pan") and 540 or 270
+	local degVal = math.floor(r * maxSpanDeg + 0.5)
 	local dmxVal = math.floor(r * 255 + 0.5)
 	numberDegLabel.Text = tostring(degVal) .. "°"
 	applyAxisToSelectedChannels(dmxVal)
@@ -738,6 +776,13 @@ local autoGateBtn = createPill(prefPage, 124, false, "Auto Gate (Dim255+Strobe0)
 autoGateBtn.MouseButton1Click:Connect(function()
 	state.autoOpenGate = not state.autoOpenGate
 	autoGateBtn.Text = "Auto Gate (Dim255+Strobe0): " .. (state.autoOpenGate and "ON" or "OFF")
+	if state.autoOpenGate then
+		for boxIdx, isSel in pairs(state.selectedChannels) do
+			if isSel then
+				openGateForFixture(resolveFixtureForBox(boxIdx))
+			end
+		end
+	end
 end)
 
 local prismModes = {
@@ -789,6 +834,7 @@ mainPage.BackgroundTransparency = 1
 mainPage.TextColor3 = Color3.fromRGB(220, 222, 228)
 mainPage.TextSize = 13
 mainPage.Font = Enum.Font.GothamMedium
+mainPage.TextWrapped = true
 mainPage.Visible = false
 mainPage.Parent = bodyFrame
 
@@ -804,18 +850,7 @@ local clearAllBtn = createPill(settingPage, 8, false, "Reset / Clear Patch")
 -- REFRESH & EVENTS
 -- ============================================================================
 local function getOwnDmxFolder()
-	local vehicles = workspace:FindFirstChild("Vehicles")
-	if not vehicles then return nil end
-	local carModel = vehicles:FindFirstChild(player.Name .. "'s Car")
-	if not carModel then
-		local lp = string.lower(player.Name)
-		for _, c in ipairs(vehicles:GetChildren()) do
-			if string.find(string.lower(c.Name), lp, 1, true) then
-				carModel = c
-				break
-			end
-		end
-	end
+	local carModel = getOwnCarModel(player)
 	if not carModel then return nil end
 	local folder = carModel:FindFirstChild("Folder")
 	return (folder and folder:FindFirstChild("DmxLights")) or carModel:FindFirstChild("DmxLights", true)
@@ -846,6 +881,7 @@ function refreshUI()
 
 		for idx = startIdx, endIdx do
 			local isSelected = state.selectedChannels[idx] == true
+			local fix = resolveFixtureForBox(idx)
 			local card = Instance.new("TextButton")
 			card.Name = "Box_" .. idx
 			card.LayoutOrder = idx - startIdx + 1
@@ -863,7 +899,11 @@ function refreshUI()
 			stroke.Thickness = 1.5
 
 			card.MouseButton1Click:Connect(function()
-				state.selectedChannels[idx] = not state.selectedChannels[idx]
+				local nextSel = not state.selectedChannels[idx]
+				state.selectedChannels[idx] = nextSel
+				if nextSel then
+					openGateForFixture(fix)
+				end
 				refreshUI()
 			end)
 		end
@@ -871,8 +911,9 @@ function refreshUI()
 
 	local selList = getSelectedChannelList()
 	local selStr = (#selList > 0) and table.concat(selList, ",") or tostring(state.nextAddress)
-	addrBadge.Text = "U" .. state.universe .. " • " .. selStr
-	mainPage.Text = "Selected CH: " .. ((#selList > 0) and table.concat(selList, ", ") or "None")
+	local connTag = transport.DataRemote and "UDP:OK" or "UDP:.."
+	addrBadge.Text = "U" .. state.universe .. "•" .. selStr .. " " .. connTag
+	mainPage.Text = "Selected CH: " .. ((#selList > 0) and table.concat(selList, ", ") or "None") .. "\nRemote: " .. (transport.DataRemote and transport.DataRemote:GetFullName() or "Waiting " .. REMOTE_NAME .. "...")
 end
 
 for _, tName in ipairs(tabNames) do

@@ -1,6 +1,6 @@
 -- DmxConsoleUI_Synced.lua (360x465)
 -- Kotak channel di patch dan Preferensi sinkron 1:1 (kalau di patch muncul 1 kotak, di Preferensi juga 1 kotak)
--- Multi-select channel + Pan / Tilt + number° + fader geser -> buffer.create(3) ke carModel.Data
+-- Multi-select channel + Pan / Tilt + number° + fader geser + efek 16-ch beam -> buffer.create(3) ke carModel.Data
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -28,8 +28,27 @@ if not PatchEngine.Profiles then
 	local BarWashProfile = {
 		Group = "BarWash", Span = 8, Dimmer = 0, Shutter = 1, Red = 2, Green = 3, Blue = 4, Effect = 5, Speed = 7,
 	}
+	-- Confirmed 16-Ch Beam mapping (0-based offsets):
+	-- CH 1 (0): PanCoarse | CH 2 (1): TiltCoarse | CH 3 (2): PanFine | CH 4 (3): TiltFine
+	-- CH 7 (6): Strobe/Shutter | CH 8 (7): Dimmer | CH 9 (8): Color | CH 10 (9): Gobo
+	-- CH 12 (11): Prism | CH 13 (12): Focus | CH 15 (14): GoboRotation / PrismRot
+	-- CH 5, 6, 11, 14, 16: unused/reserved
 	local ClaraS14Profile = {
-		Group = "MovingBeam", Span = 16, X = 0, Y = 1, Shutter = 6, Dimmer = 7, Effect = 11, Speed = 14,
+		Group = "MovingBeam",
+		Span = 16,
+		X = 0,
+		Y = 1,
+		PanFine = 2,
+		TiltFine = 3,
+		Shutter = 6,
+		Dimmer = 7,
+		Color = 8,
+		Gobo = 9,
+		Prism = 11,
+		Effect = 11,
+		Focus = 12,
+		Speed = 14,
+		GoboRotation = 14,
 	}
 	PatchEngine.Profiles = {
 		["ClaraS14"] = ClaraS14Profile,
@@ -121,8 +140,15 @@ if type(PatchEngine.PatchAll) ~= "function" then
 					Channels = {
 						X = toAbsChannel(addr, prof.X, span),
 						Y = toAbsChannel(addr, prof.Y, span),
+						PanFine = toAbsChannel(addr, prof.PanFine, span),
+						TiltFine = toAbsChannel(addr, prof.TiltFine, span),
 						Shutter = toAbsChannel(addr, prof.Shutter, span),
 						Dimmer = toAbsChannel(addr, prof.Dimmer or 0, span),
+						Color = toAbsChannel(addr, prof.Color, span),
+						Gobo = toAbsChannel(addr, prof.Gobo, span),
+						Prism = toAbsChannel(addr, prof.Prism or prof.Effect, span),
+						Focus = toAbsChannel(addr, prof.Focus, span),
+						Speed = toAbsChannel(addr, prof.Speed or prof.GoboRotation, span),
 						Red = toAbsChannel(addr, prof.Red, span),
 						Green = toAbsChannel(addr, prof.Green, span),
 						Blue = toAbsChannel(addr, prof.Blue, span),
@@ -257,6 +283,12 @@ local state = {
 	patchedByUniv = { [1] = {}, [2] = {} },
 	nextAddress = 1,
 	autoOpenGate = true,
+	-- Quick effect steps untuk 16-ch beam
+	colorStep = 1,  -- 1..8 (CH 9)
+	goboStep = 0,   -- 0..4 (CH 10)
+	prismStep = 0,  -- 0=single, 1=flat, 2=ring1, 3=ring2 (CH 12)
+	focusVal = 0,   -- 0..255 (CH 13)
+	rotVal = 0,     -- 0..255 (CH 15)
 }
 
 local function getSelectedFixtureName()
@@ -274,36 +306,45 @@ local function getSelectedChannelList()
 	return list
 end
 
-local function applyAxisToSelectedChannels(dmxVal)
+local function sendGateIfNeeded(fix)
+	if state.autoOpenGate and fix and fix.Channels then
+		if fix.Channels.Dimmer then
+			transport:SendChannel(fix.Channels.Dimmer, 255, true)
+		end
+		-- Nilai 0..3 berada di OffRanges strobe (lampu nyala normal tanpa kedip)
+		if fix.Channels.Shutter then
+			transport:SendChannel(fix.Channels.Shutter, 0, true)
+		end
+	end
+end
+
+local function sendToSelectedRole(roleKey, dmxVal, fallbackCh)
 	local clamped = math.clamp(math.floor(dmxVal), 0, 255)
 	local patched = state.patchedByUniv[state.universe] or {}
-	local role = (state.axisMode == "Pan") and "X" or "Y"
 	local targets = {}
 	local seen = {}
 
 	for ch, isSel in pairs(state.selectedChannels) do
 		if isSel then
 			local fix = PatchEngine.GetFixtureAtChannel(patched, ch, state.universe)
-			local roleCh = fix and fix.Channels and fix.Channels[role]
-			local finalCh = roleCh or ch
-			if not seen[finalCh] then
-				seen[finalCh] = true
-				table.insert(targets, finalCh)
+			local targetCh = (fix and fix.Channels and fix.Channels[roleKey]) or fallbackCh or ch
+			if targetCh and not seen[targetCh] then
+				seen[targetCh] = true
+				table.insert(targets, targetCh)
 			end
-			if state.autoOpenGate and fix and fix.Channels then
-				if fix.Channels.Dimmer then
-					transport:SendChannel(fix.Channels.Dimmer, 255, true)
-				end
-				if fix.Channels.Shutter then
-					transport:SendChannel(fix.Channels.Shutter, 255, true)
-				end
-			end
+			sendGateIfNeeded(fix)
 		end
 	end
 
 	for _, targetCh in ipairs(targets) do
 		transport:SendChannel(targetCh, clamped, true)
 	end
+end
+
+local function applyAxisToSelectedChannels(dmxVal)
+	local role = (state.axisMode == "Pan") and "X" or "Y"
+	local fallback = (state.axisMode == "Pan") and 1 or 2
+	sendToSelectedRole(role, dmxVal, fallback)
 end
 
 local screenGui = Instance.new("ScreenGui")
@@ -569,7 +610,7 @@ addrBadge.Parent = patchPage
 Instance.new("UICorner", addrBadge).CornerRadius = UDim.new(0, 6)
 
 -- ============================================================================
--- TAB 2: PREFERENSI (Kotak channel sinkron + Pan / Tilt + number° + Fader)
+-- TAB 2: PREFERENSI (Kotak channel sinkron + Pan / Tilt + number° + Fader + 16-Ch FX)
 -- ============================================================================
 local prefPage = Instance.new("Frame")
 prefPage.Size = UDim2.new(1, 0, 1, -126)
@@ -579,8 +620,8 @@ prefPage.Visible = false
 prefPage.Parent = bodyFrame
 
 local panBtn = Instance.new("TextButton")
-panBtn.Size = UDim2.fromOffset(108, 28)
-panBtn.Position = UDim2.fromOffset(0, 8)
+panBtn.Size = UDim2.fromOffset(108, 26)
+panBtn.Position = UDim2.fromOffset(0, 4)
 panBtn.Text = "Pan"
 panBtn.TextSize = 13
 panBtn.Font = Enum.Font.GothamMedium
@@ -589,8 +630,8 @@ panBtn.Parent = prefPage
 Instance.new("UICorner", panBtn).CornerRadius = UDim.new(0, 6)
 
 local tiltBtn = Instance.new("TextButton")
-tiltBtn.Size = UDim2.fromOffset(108, 28)
-tiltBtn.Position = UDim2.fromOffset(116, 8)
+tiltBtn.Size = UDim2.fromOffset(108, 26)
+tiltBtn.Position = UDim2.fromOffset(116, 4)
 tiltBtn.Text = "Tilt"
 tiltBtn.TextSize = 13
 tiltBtn.Font = Enum.Font.GothamMedium
@@ -600,7 +641,7 @@ Instance.new("UICorner", tiltBtn).CornerRadius = UDim.new(0, 6)
 
 local numberDegLabel = Instance.new("TextLabel")
 numberDegLabel.Size = UDim2.fromOffset(96, 26)
-numberDegLabel.Position = UDim2.new(1, -96, 0, 9)
+numberDegLabel.Position = UDim2.new(1, -96, 0, 4)
 numberDegLabel.BackgroundColor3 = Color3.fromRGB(115, 116, 120)
 numberDegLabel.Text = "0°"
 numberDegLabel.TextColor3 = Color3.fromRGB(32, 32, 34)
@@ -612,7 +653,7 @@ Instance.new("UICorner", numberDegLabel).CornerRadius = UDim.new(0, 4)
 
 local faderTrack = Instance.new("Frame")
 faderTrack.Size = UDim2.new(1, 0, 0, 6)
-faderTrack.Position = UDim2.fromOffset(0, 56)
+faderTrack.Position = UDim2.fromOffset(0, 42)
 faderTrack.BackgroundColor3 = Color3.fromRGB(130, 131, 135)
 faderTrack.BorderSizePixel = 0
 faderTrack.Parent = prefPage
@@ -671,10 +712,72 @@ do
 	end)
 end
 
-local autoGateBtn = createPill(prefPage, 86, false, "Auto Gate (Dim+Shutter 255): ON")
+local function createMiniBtn(parent, xPos, yPos, width, text)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.fromOffset(width, 26)
+	btn.Position = UDim2.fromOffset(xPos, yPos)
+	btn.BackgroundColor3 = Color3.fromRGB(74, 74, 77)
+	btn.TextColor3 = Color3.fromRGB(235, 235, 240)
+	btn.Text = text
+	btn.TextSize = 11
+	btn.Font = Enum.Font.GothamMedium
+	btn.BorderSizePixel = 0
+	btn.Parent = parent
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+	return btn
+end
+
+local colorBtn = createMiniBtn(prefPage, 0, 58, 108, "Color #1 (CH9)")
+local goboBtn = createMiniBtn(prefPage, 114, 58, 108, "Gobo Off (CH10)")
+local prismBtn = createMiniBtn(prefPage, 228, 58, 108, "Prism 1x (CH12)")
+
+local focusBtn = createMiniBtn(prefPage, 0, 90, 165, "Focus: 0 (CH13)")
+local rotBtn = createMiniBtn(prefPage, 171, 90, 165, "Rot/Spd: 0 (CH15)")
+
+local autoGateBtn = createPill(prefPage, 124, false, "Auto Gate (Dim255+Strobe0): ON")
 autoGateBtn.MouseButton1Click:Connect(function()
 	state.autoOpenGate = not state.autoOpenGate
-	autoGateBtn.Text = "Auto Gate (Dim+Shutter 255): " .. (state.autoOpenGate and "ON" or "OFF")
+	autoGateBtn.Text = "Auto Gate (Dim255+Strobe0): " .. (state.autoOpenGate and "ON" or "OFF")
+end)
+
+local prismModes = {
+	{ label = "Single", val = 0 },
+	{ label = "Flat", val = 25 },
+	{ label = "Ring1", val = 80 },
+	{ label = "Ring2", val = 180 },
+}
+
+colorBtn.MouseButton1Click:Connect(function()
+	state.colorStep = (state.colorStep % 8) + 1
+	local dmxVal = math.floor(((state.colorStep - 1) / 8) * 255)
+	colorBtn.Text = "Color #" .. state.colorStep .. " (CH9)"
+	sendToSelectedRole("Color", dmxVal, 9)
+end)
+
+goboBtn.MouseButton1Click:Connect(function()
+	state.goboStep = (state.goboStep + 1) % 5
+	local dmxVal = (state.goboStep == 0) and 0 or math.floor(((state.goboStep - 1) / 4) * 255)
+	goboBtn.Text = (state.goboStep == 0) and "Gobo Off (CH10)" or ("Gobo #" .. state.goboStep .. " (CH10)")
+	sendToSelectedRole("Gobo", dmxVal, 10)
+end)
+
+prismBtn.MouseButton1Click:Connect(function()
+	state.prismStep = (state.prismStep % #prismModes) + 1
+	local mode = prismModes[state.prismStep]
+	prismBtn.Text = "Prism " .. mode.label .. " (CH12)"
+	sendToSelectedRole("Prism", mode.val, 12)
+end)
+
+focusBtn.MouseButton1Click:Connect(function()
+	state.focusVal = (state.focusVal + 64) % 256
+	focusBtn.Text = "Focus: " .. state.focusVal .. " (CH13)"
+	sendToSelectedRole("Focus", state.focusVal, 13)
+end)
+
+rotBtn.MouseButton1Click:Connect(function()
+	state.rotVal = (state.rotVal + 64) % 256
+	rotBtn.Text = "Rot/Spd: " .. state.rotVal .. " (CH15)"
+	sendToSelectedRole("Speed", state.rotVal, 15)
 end)
 
 -- ============================================================================
